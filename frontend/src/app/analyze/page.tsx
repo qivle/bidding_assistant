@@ -8,9 +8,19 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Label } from "@/components/ui/label";
 
+interface FatalFlawItem {
+  description: string;
+  page: string;
+}
+
+interface FatalFlawCategory {
+  category: string;
+  items: FatalFlawItem[];
+}
+
 interface AnalysisData {
   projectInfo: { name: string; number: string; budget: string };
-  fatalFlaws: string[];
+  fatalFlaws: FatalFlawCategory[];
   volumes: {
     volume_name: string;
     items: { name: string; is_required: boolean; template_text?: string }[];
@@ -25,7 +35,7 @@ export default function AnalyzePage() {
   const [result, setResult] = useState<AnalysisData | null>(null);
   
   // State for the Fatal Flaw Checklist
-  const [checkedFlaws, setCheckedFlaws] = useState<{ [key: number]: boolean }>({});
+  const [checkedFlaws, setCheckedFlaws] = useState<{ [key: string]: boolean }>({});
   const [isSaved, setIsSaved] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -74,15 +84,19 @@ export default function AnalyzePage() {
     }
   };
 
-  const handleGenerateWord = async () => {
+  const handleGenerateWord = async (volumeIndex: number, volumeName: string) => {
     if (!result) return;
     try {
-      toast.info("正在组装原生 Word 标书...", { description: "如果有附件，这可能需要几十秒的时间。" });
+      toast.info(`正在组装 ${volumeName} ...`, { description: "如果有附件或需要切割原文档，这可能需要几十秒的时间。" });
       
       const formData = new FormData();
       formData.append("data", JSON.stringify(result));
+      formData.append("volume_index", volumeIndex.toString());
       if (attachment) {
         formData.append("attachment", attachment);
+      }
+      if (file) {
+        formData.append("source_file", file);
       }
 
       const res = await fetch("http://localhost:8000/api/generate", {
@@ -96,13 +110,13 @@ export default function AnalyzePage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${result.projectInfo?.name || '政企投标文件'}_智能生成版.docx`;
+      a.download = `${result.projectInfo?.name || '政企投标文件'}_${volumeName}.docx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       
-      toast.success("标书已成功下载！", { description: "请打开 Word 进行二次编辑。" });
+      toast.success(`${volumeName} 已成功下载！`, { description: "请打开 Word 进行二次编辑。" });
     } catch (err: any) {
       toast.error("生成失败", { description: err.message });
     }
@@ -125,7 +139,7 @@ export default function AnalyzePage() {
   };
 
   const allFlawsChecked = result 
-    ? result.fatalFlaws.length === 0 || Object.keys(checkedFlaws).length === result.fatalFlaws.length && Object.values(checkedFlaws).every(v => v)
+    ? result.fatalFlaws.length === 0 || result.fatalFlaws.every((cat, cIdx) => cat.items.every((_, iIdx) => checkedFlaws[`${cIdx}-${iIdx}`]))
     : false;
 
   if (!isLoaded) return null;
@@ -157,28 +171,16 @@ export default function AnalyzePage() {
             </CardContent>
           </Card>
 
-          {result && (
-            <Card className="bg-blue-50/50 border-blue-200">
-              <CardHeader>
-                <CardTitle className="text-blue-800 text-lg">生成原生 Word 标书</CardTitle>
-                <CardDescription>当所有「致命风险」检查完毕后可解锁</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <Label className="text-xs text-slate-500">上传资质/证明文件 (可选 PDF)</Label>
                   <Input type="file" accept=".pdf" onChange={(e) => setAttachment(e.target.files?.[0] || null)} />
-                  <p className="text-[10px] text-slate-400">系统会自动将 PDF 转为多张高清图片并按顺序插入 Word。</p>
+                  <p className="text-[10px] text-slate-400">系统会在生成的特定分册中自动将 PDF 转为多张高清图片并按顺序插入。</p>
                 </div>
-                <Button 
-                  disabled={!allFlawsChecked} 
-                  onClick={handleGenerateWord}
-                  className={`w-full ${allFlawsChecked ? 'bg-green-600 hover:bg-green-700' : ''}`}
-                >
-                  {allFlawsChecked ? "导出 Word 框架" : "请先勾选确认所有废标预警项"}
-                </Button>
-              </CardContent>
-            </Card>
-          )}
+                {!allFlawsChecked && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-600">
+                    请先在右侧自查列表中确认所有致命风险条款，再进行下载。
+                  </div>
+                )}
         </div>
 
         {/* Right Column: Results Dashboard */}
@@ -234,18 +236,31 @@ export default function AnalyzePage() {
                   {result.fatalFlaws.length === 0 ? (
                     <p className="text-sm text-slate-500">太棒了，本次扫描未发现明确的带星号强制废标条款。</p>
                   ) : (
-                    result.fatalFlaws.map((flaw, idx) => (
-                      <div key={idx} className="flex items-start gap-3 p-3 rounded-lg border bg-white hover:bg-slate-50 transition-colors">
-                        <input 
-                          type="checkbox" 
-                          id={`flaw-${idx}`}
-                          className="mt-1 w-5 h-5 accent-red-600 cursor-pointer"
-                          checked={checkedFlaws[idx] || false}
-                          onChange={(e) => setCheckedFlaws({...checkedFlaws, [idx]: e.target.checked})}
-                        />
-                        <label htmlFor={`flaw-${idx}`} className={`text-sm cursor-pointer ${checkedFlaws[idx] ? 'text-slate-400 line-through' : 'text-slate-700 font-medium'}`}>
-                          {flaw}
-                        </label>
+                    result.fatalFlaws.map((cat, cIdx) => (
+                      <div key={cIdx} className="space-y-2 mb-4">
+                        <h4 className="font-semibold text-slate-800 text-sm border-l-4 border-red-500 pl-2">{cat.category}</h4>
+                        <div className="space-y-2 pl-3">
+                          {cat.items.map((item, iIdx) => {
+                            const flawKey = `${cIdx}-${iIdx}`;
+                            return (
+                              <div key={iIdx} className="flex items-start gap-3 p-3 rounded-lg border bg-white hover:bg-slate-50 transition-colors">
+                                <input 
+                                  type="checkbox" 
+                                  id={`flaw-${flawKey}`}
+                                  className="mt-1 w-5 h-5 accent-red-600 cursor-pointer flex-shrink-0"
+                                  checked={checkedFlaws[flawKey] || false}
+                                  onChange={(e) => setCheckedFlaws({...checkedFlaws, [flawKey]: e.target.checked})}
+                                />
+                                <label htmlFor={`flaw-${flawKey}`} className={`text-sm cursor-pointer ${checkedFlaws[flawKey] ? 'text-slate-400 line-through' : 'text-slate-700 font-medium'} flex-grow`}>
+                                  {item.description}
+                                </label>
+                                <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded whitespace-nowrap">
+                                  {item.page}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     ))
                   )}
@@ -264,9 +279,19 @@ export default function AnalyzePage() {
               </CardHeader>
               <CardContent className="space-y-6">
                 {result.volumes?.map((vol, vidx) => (
-                  <div key={vidx} className="space-y-3">
-                    <h3 className="font-bold text-slate-800 bg-slate-100 p-2 rounded">{vol.volume_name}</h3>
-                    <ul className="grid gap-2 pl-4">
+                  <div key={vidx} className="space-y-3 border p-4 rounded-xl bg-slate-50/50">
+                    <div className="flex items-center justify-between bg-slate-100 p-3 rounded-lg">
+                      <h3 className="font-bold text-slate-800">{vol.volume_name}</h3>
+                      <Button 
+                        size="sm" 
+                        disabled={!allFlawsChecked}
+                        onClick={() => handleGenerateWord(vidx, vol.volume_name)}
+                        className={allFlawsChecked ? "bg-blue-600 hover:bg-blue-700" : ""}
+                      >
+                        下载此分册 (Word)
+                      </Button>
+                    </div>
+                    <ul className="grid gap-2 pl-2">
                       {vol.items.map((item, iidx) => (
                         <li key={iidx} className="flex flex-col text-sm bg-white border p-3 rounded-md shadow-sm">
                           <div className="flex items-center justify-between">
@@ -275,8 +300,9 @@ export default function AnalyzePage() {
                           </div>
                           {item.template_text && (
                             <div className="mt-2 text-xs text-green-700 bg-green-50 p-2 rounded">
-                              <span className="font-bold">✓ 已智能提取格式模板 (Word 生成时将自动填入)：</span>
-                              <p className="mt-1 line-clamp-2 italic text-slate-500">{item.template_text}</p>
+                              <span className="font-bold">✓ 找到模板特征词：</span>
+                              <span className="ml-1 italic">{item.template_text}</span>
+                              <p className="text-slate-400 mt-1">生成 Word 时将尝试去原文档中自动切割克隆其格式排版。</p>
                             </div>
                           )}
                         </li>

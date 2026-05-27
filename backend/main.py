@@ -72,12 +72,17 @@ async def analyze_document(
 @app.post("/api/generate")
 async def generate_document(
     data: str = Form(...),
-    attachment: UploadFile = File(None)
+    volume_index: int = Form(0),
+    attachment: UploadFile = File(None),
+    source_file: UploadFile = File(None)
 ):
     try:
         analysis_dict = json.loads(data)
         att_bytes = await attachment.read() if attachment else None
-        doc_io = create_styled_document(analysis_dict, att_bytes)
+        source_bytes = await source_file.read() if source_file else None
+        source_filename = source_file.filename if source_file else None
+        
+        doc_io = create_styled_document(analysis_dict, volume_index, att_bytes, source_bytes, source_filename)
         
         return StreamingResponse(
             doc_io,

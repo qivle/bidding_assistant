@@ -16,7 +16,16 @@ class Volume(BaseModel):
     volume_name: str
     items: List[FileItem]
 
+class FatalFlawItem(BaseModel):
+    description: str
+    page: str
+
+class FatalFlawCategory(BaseModel):
+    category: str
+    items: List[FatalFlawItem]
+
 class AnalysisResult(BaseModel):
     projectInfo: Dict[str, str]
-    fatalFlaws: List[str]
+    fatalFlaws: List[FatalFlawCategory]
     volumes: List[Volume]
+
