@@ -5,6 +5,7 @@ class AIConfig(BaseModel):
     baseUrl: str
     apiKey: str
     model: str
+    model_flash: Optional[str] = None
 
 class FileItem(BaseModel):
     name: str

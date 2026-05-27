@@ -38,6 +38,13 @@ async def analyze_document(
     try:
         # 1. 解析前端传来的大模型配置
         ai_config_dict = json.loads(config)
+        # 打印配置，对 API Key 进行脱敏处理
+        safe_config = ai_config_dict.copy()
+        if "apiKey" in safe_config:
+            key_val = safe_config["apiKey"]
+            safe_config["apiKey"] = (key_val[:4] + "..." + key_val[-4:]) if len(key_val) > 8 else "***"
+        print(f"Received config: {safe_config}")
+        
         ai_config = AIConfig(**ai_config_dict)
         
         # 2. 读取上传的文件内容

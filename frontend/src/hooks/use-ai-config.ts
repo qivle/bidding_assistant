@@ -4,12 +4,14 @@ export interface AIConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  model_flash: string;
 }
 
 const DEFAULT_CONFIG: AIConfig = {
   baseUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
   model: 'deepseek-chat',
+  model_flash: 'deepseek-chat',
 };
 
 export function useAIConfig() {

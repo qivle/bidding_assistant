@@ -58,13 +58,24 @@ export default function SettingsPage() {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="model">调用模型名称 (Model Name)</Label>
+            <Label htmlFor="model">主推理模型 (Pro Model)</Label>
             <Input 
               id="model" 
-              placeholder="deepseek-chat 或 moonshot-v1-8k" 
+              placeholder="例如: deepseek-reasoner 或 deepseek-chat" 
               value={formData.model}
               onChange={(e) => setFormData({...formData, model: e.target.value})}
             />
+            <p className="text-xs text-muted-foreground">用于高难度推理，如解析复杂的层级结构与致命废标条款。</p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="model_flash">快速抽取模型 (Flash Model)</Label>
+            <Input 
+              id="model_flash" 
+              placeholder="例如: deepseek-chat 或 deepseek-v4-flash" 
+              value={formData.model_flash}
+              onChange={(e) => setFormData({...formData, model_flash: e.target.value})}
+            />
+            <p className="text-xs text-muted-foreground">用于原文模板检索等机械提取任务，建议使用更便宜快速的模型以降低成本。</p>
           </div>
         </CardContent>
         <CardFooter className="flex justify-end bg-muted/50 p-6 rounded-b-xl">
@@ -83,7 +94,8 @@ export default function SettingsPage() {
             </CardHeader>
             <CardContent className="p-4 pt-0 text-sm space-y-1">
               <p>Base URL: <code>https://api.deepseek.com/v1</code></p>
-              <p>Model: <code>deepseek-chat</code></p>
+              <p>Pro Model: <code>deepseek-reasoner</code></p>
+              <p>Flash Model: <code>deepseek-chat</code></p>
             </CardContent>
           </Card>
           <Card>
@@ -92,7 +104,8 @@ export default function SettingsPage() {
             </CardHeader>
             <CardContent className="p-4 pt-0 text-sm space-y-1">
               <p>Base URL: <code>https://api.moonshot.cn/v1</code></p>
-              <p>Model: <code>moonshot-v1-32k</code></p>
+              <p>Pro Model: <code>moonshot-v1-32k</code></p>
+              <p>Flash Model: <code>moonshot-v1-8k</code></p>
             </CardContent>
           </Card>
         </div>
