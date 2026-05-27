@@ -1,0 +1,20 @@
+# Node modules and Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+
+# Python and Backend
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+backend/projects.db
+backend/projects.db-journal
+
+# OS and IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
