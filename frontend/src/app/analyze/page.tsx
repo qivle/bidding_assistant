@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useAIConfig } from "@/hooks/use-ai-config";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+
 import { toast } from "sonner";
 import { Label } from "@/components/ui/label";
 
@@ -37,6 +38,40 @@ export default function AnalyzePage() {
   // State for the Fatal Flaw Checklist
   const [checkedFlaws, setCheckedFlaws] = useState<{ [key: string]: boolean }>({});
   const [isSaved, setIsSaved] = useState(false);
+  const [isHistoryMode, setIsHistoryMode] = useState(false);
+  const [isStreamingMode, setIsStreamingMode] = useState(true);
+  const [streamLogs, setStreamLogs] = useState<string[]>([]);
+  const [streamStatus, setStreamStatus] = useState<string>("准备就绪");
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [streamLogs]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const projectId = params.get("projectId");
+      if (projectId) {
+        setIsHistoryMode(true);
+        setIsSaved(true); // Since it's from history, it's already saved
+        fetch(`http://localhost:8000/api/projects/${projectId}`)
+          .then(res => {
+            if (!res.ok) throw new Error();
+            return res.json();
+          })
+          .then(data => {
+             if(data.data && data.data.analysis_data) {
+                setResult(data.data.analysis_data);
+                toast.success("已恢复历史项目数据");
+             }
+          })
+          .catch(() => toast.error("恢复历史项目失败"));
+      }
+    }
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -57,25 +92,80 @@ export default function AnalyzePage() {
     setIsAnalyzing(true);
     setResult(null);
     setCheckedFlaws({});
+    setStreamLogs([]);
+    setStreamStatus("启动解析引擎...");
 
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("config", JSON.stringify(config));
 
-      const res = await fetch("http://localhost:8000/api/analyze", {
-        method: "POST",
-        body: formData,
-      });
+      if (isStreamingMode) {
+        const res = await fetch("http://localhost:8000/api/analyze/stream", {
+          method: "POST",
+          body: formData,
+        });
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "解析请求失败");
+        if (!res.ok || !res.body) throw new Error("流式解析请求失败");
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            let parsed;
+            try {
+              parsed = JSON.parse(line);
+            } catch (e) {
+               console.error("JSON parse error on stream chunk:", line);
+               continue;
+            }
+            
+            if (parsed.status === "info" || parsed.status === "agent1" || parsed.status === "agent2" || parsed.status === "agent3") {
+              setStreamStatus(parsed.message);
+              setStreamLogs(prev => [...prev, `\n[INFO] ${parsed.message}\n`]);
+            } else if (parsed.status === "chunk1" || parsed.status === "chunk2" || parsed.status === "chunk3") {
+              setStreamLogs(prev => {
+                 const newLogs = [...prev];
+                 if (newLogs.length === 0) {
+                     newLogs.push(parsed.text);
+                 } else {
+                     newLogs[newLogs.length - 1] += parsed.text;
+                 }
+                 return newLogs;
+              });
+            } else if (parsed.status === "error") {
+              throw new Error(parsed.message);
+            } else if (parsed.status === "done") {
+              setResult(parsed.data);
+              toast.success("解析成功！", { description: "已成功提取实质性条款和文件要求。" });
+            }
+          }
+        }
+      } else {
+        const res = await fetch("http://localhost:8000/api/analyze", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || "解析请求失败");
+        }
+
+        const data = await res.json();
+        setResult(data.data);
+        toast.success("解析成功！", { description: "已成功提取实质性条款和文件要求。" });
       }
-
-      const data = await res.json();
-      setResult(data.data);
-      toast.success("解析成功！", { description: "已成功提取实质性条款和文件要求。" });
     } catch (error: any) {
       console.error(error);
       toast.error("解析失败", { description: error.message });
@@ -156,17 +246,28 @@ export default function AnalyzePage() {
               <CardDescription>上传招标文件原件 (PDF 或 Word)，系统将自动调用大模型进行拆解。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {isHistoryMode && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-700">
+                  <strong>提示：当前为历史展示模式。</strong><br />
+                  您可直接查看右侧分析结果。若需生成带原格式的 Word 分册或重新解析，请重新选择原始标书文件。
+                </div>
+              )}
               <div className="space-y-2">
-                <Label>选择文件</Label>
+                <Label>选择文件 {isHistoryMode && "(关联源文件)"}</Label>
                 <Input type="file" accept=".pdf,.docx" onChange={handleFileChange} />
+              </div>
+                            <div className="flex items-center justify-between space-x-2 py-2">
+                <Label htmlFor="streaming-mode" className="text-sm text-slate-600 font-normal">开启实时流式解析反馈 (开发者模式)</Label>
+                <input type="checkbox" id="streaming-mode" checked={isStreamingMode} onChange={(e) => setIsStreamingMode(e.target.checked)} disabled={isAnalyzing} className="w-4 h-4 cursor-pointer accent-primary" />
               </div>
               <Button 
                 onClick={handleAnalyze} 
                 disabled={isAnalyzing || !file} 
                 className="w-full"
                 size="lg"
+                variant={isHistoryMode ? "secondary" : "default"}
               >
-                {isAnalyzing ? "正在智能拆解中..." : "开始解析"}
+                {isAnalyzing ? "正在智能拆解中..." : (isHistoryMode ? "重新解析覆盖当前项目" : "开始解析")}
               </Button>
             </CardContent>
           </Card>
@@ -186,17 +287,30 @@ export default function AnalyzePage() {
         {/* Right Column: Results Dashboard */}
         <div className="md:col-span-8">
           {!result && !isAnalyzing && (
-            <div className="h-full min-h-[400px] flex items-center justify-center border-2 border-dashed rounded-xl text-slate-400 p-8 text-center">
+            <div className="h-full min-max-h-[400px] flex items-center justify-center border-2 border-dashed rounded-xl text-slate-400 p-8 text-center">
               请在左侧上传招标文件并点击解析。
               <br/>注意：长文档可能需要 15-30 秒的 AI 处理时间。
             </div>
           )}
 
           {isAnalyzing && (
-            <div className="h-full min-h-[400px] flex flex-col items-center justify-center space-y-4 rounded-xl bg-slate-50 border p-8 animate-pulse">
-              <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
-              <p className="text-slate-600 font-medium">多模态引擎正在深度阅读文档...</p>
-              <p className="text-sm text-slate-400">正在定位评标办法与实质性响应条款 (★/▲)</p>
+            <div className="h-full min-max-h-[400px] flex flex-col rounded-xl bg-slate-50 border overflow-hidden">
+              <div className="p-6 border-b bg-white flex items-center space-x-4">
+                <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+                <div>
+                  <h3 className="font-medium text-slate-800">正在进行智能拆解...</h3>
+                  <p className="text-sm text-primary animate-pulse">{streamStatus}</p>
+                </div>
+              </div>
+              {isStreamingMode && (
+                <div className="flex-1 p-4 bg-slate-900 text-green-400 font-mono text-xs overflow-y-auto whitespace-pre-wrap leading-relaxed max-h-[400px]">
+                  {streamLogs.map((log, idx) => (
+                    <span key={idx}>{log}</span>
+                  ))}
+                  <span className="animate-pulse">_</span>
+                  <div ref={logsEndRef} />
+                </div>
+              )}
             </div>
           )}
 
@@ -226,10 +340,28 @@ export default function AnalyzePage() {
               {/* Fatal Flaws Checklist */}
               <Card className="border-red-200 shadow-sm">
                 <CardHeader className="bg-red-50/50 pb-4 border-b border-red-100">
-                  <CardTitle className="text-red-600 flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-                    致命风险雷达 (必须全部确认)
-                  </CardTitle>
+                  <div className="flex justify-between items-center">
+                    <CardTitle className="text-red-600 flex items-center gap-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                      致命风险雷达 (必须全部确认)
+                    </CardTitle>
+                    {result.fatalFlaws.length > 0 && (
+                      <button 
+                        onClick={() => {
+                          const newCheckedState: { [key: string]: boolean } = {};
+                          result.fatalFlaws.forEach((cat, cIdx) => {
+                            cat.items.forEach((_, iIdx) => {
+                              newCheckedState[`${cIdx}-${iIdx}`] = true;
+                            });
+                          });
+                          setCheckedFlaws(newCheckedState);
+                        }}
+                        className="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-3 py-1.5 rounded-md transition-colors"
+                      >
+                        一键全选
+                      </button>
+                    )}
+                  </div>
                   <CardDescription className="text-red-800/80">以下条款带有★或▲符号，未响应将直接废标！</CardDescription>
                 </CardHeader>
                 <CardContent className="pt-4 space-y-3">
@@ -284,29 +416,41 @@ export default function AnalyzePage() {
                       <h3 className="font-bold text-slate-800">{vol.volume_name}</h3>
                       <Button 
                         size="sm" 
-                        disabled={!allFlawsChecked}
+                        disabled={!allFlawsChecked || (isHistoryMode && !file && vol.items.some(i => i.template_text))}
                         onClick={() => handleGenerateWord(vidx, vol.volume_name)}
                         className={allFlawsChecked ? "bg-blue-600 hover:bg-blue-700" : ""}
                       >
-                        下载此分册 (Word)
+                        {isHistoryMode && !file && vol.items.some(i => i.template_text) ? "需要关联源文件才能下载" : "下载此分册 (Word)"}
                       </Button>
                     </div>
                     <ul className="grid gap-2 pl-2">
-                      {vol.items.map((item, iidx) => (
-                        <li key={iidx} className="flex flex-col text-sm bg-white border p-3 rounded-md shadow-sm">
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium text-slate-700">{item.name}</span>
-                            {item.is_required && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded">必须提供</span>}
-                          </div>
-                          {item.template_text && (
-                            <div className="mt-2 text-xs text-green-700 bg-green-50 p-2 rounded">
-                              <span className="font-bold">✓ 找到模板特征词：</span>
-                              <span className="ml-1 italic">{item.template_text}</span>
-                              <p className="text-slate-400 mt-1">生成 Word 时将尝试去原文档中自动切割克隆其格式排版。</p>
+                      {vol.items?.map((item, iidx) => {
+                        const isHeading = (item as any).type === "heading";
+                        if (isHeading) {
+                          return (
+                            <li key={iidx} className="flex flex-col text-sm bg-slate-100 border-l-4 border-primary p-3 mt-2 rounded-r-md shadow-sm">
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold text-slate-900 text-base">{item.name}</span>
+                              </div>
+                            </li>
+                          );
+                        }
+                        return (
+                          <li key={iidx} className="flex flex-col text-sm bg-white border p-3 rounded-md shadow-sm ml-4">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-slate-700">{item.name}</span>
+                              {item.is_required && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded">必须提供</span>}
                             </div>
-                          )}
-                        </li>
-                      ))}
+                            {item.template_text && item.template_text !== "null" && (
+                              <div className="mt-2 text-xs text-green-700 bg-green-50 p-2 rounded">
+                                <span className="font-bold">✓ 找到模板特征词：</span>
+                                <span className="ml-1 italic">{item.template_text}</span>
+                                <p className="text-slate-400 mt-1">生成 Word 时将尝试去原文档中自动切割克隆其格式排版。</p>
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 ))}

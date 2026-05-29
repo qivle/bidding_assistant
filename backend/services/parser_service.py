@@ -19,15 +19,29 @@ def parse_pdf(file_bytes: bytes, max_pages: int = 150) -> str:
     return text
 
 def parse_docx(file_bytes: bytes) -> str:
-    """提取 Word 文档内容，适当注入段落标识"""
+    """提取 Word 文档内容，按顺序提取段落和表格"""
     text = ""
     try:
         doc = docx.Document(io.BytesIO(file_bytes))
-        for i, para in enumerate(doc.paragraphs):
-            # 为了给大模型提供一些位置上下文，我们在明显的标题或者每隔50段注入一次标记
-            if para.style.name.startswith('Heading') or i % 50 == 0:
-                text += f"\n---[文档位置: 段落 {i+1}]---\n"
-            text += para.text + "\n"
+        for i, child in enumerate(doc.element.body):
+            if i % 50 == 0:
+                text += f"\n---[文档位置: 块 {i+1}]---\n"
+                
+            if child.tag.endswith('p'):
+                p = docx.text.paragraph.Paragraph(child, doc)
+                if p.style.name.startswith('Heading'):
+                    text += f"\n---[文档位置: 标题]---\n"
+                text += p.text + "\n"
+            elif child.tag.endswith('tbl'):
+                text += "\n[此处存在一个文档表格，请注意这可能是一个模板框架]\n"
+                # 简单提取一点表格文本以便模型判断
+                tbl = docx.table.Table(child, doc)
+                for row in tbl.rows:
+                    row_text = []
+                    for cell in row.cells:
+                        row_text.append(cell.text.replace('\n', ' ').strip())
+                    text += " | ".join(row_text) + "\n"
+                text += "\n"
     except Exception as e:
         print(f"DOCX parsing error: {e}")
     return text

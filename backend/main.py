@@ -6,7 +6,7 @@ import uvicorn
 import json
 from models.schemas import AIConfig, AnalysisResult
 from services.parser_service import parse_document
-from services.llm_service import extract_bidding_info
+from services.llm_service import extract_bidding_info, extract_bidding_info_stream
 from services.generator_service import create_styled_document
 from services.db_service import init_db, save_project, get_projects
 
@@ -67,6 +67,33 @@ async def analyze_document(
         }
     except Exception as e:
         print(f"Analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/analyze/stream")
+async def analyze_document_stream(
+    file: UploadFile = File(...),
+    config: str = Form(...)
+):
+    try:
+        ai_config_dict = json.loads(config)
+        ai_config = AIConfig(**ai_config_dict)
+        
+        file_bytes = await file.read()
+        
+        async def event_generator():
+            yield json.dumps({"status": "info", "message": "正在解析文档内容..."}) + "\n"
+            text = parse_document(file.filename, file_bytes)
+            if not text or len(text.strip()) == 0:
+                yield json.dumps({"status": "error", "message": "未能从文档中提取到有效文本"}) + "\n"
+                return
+                
+            async for chunk in extract_bidding_info_stream(text, ai_config):
+                yield chunk
+                
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        
+    except Exception as e:
+        print(f"Analyze Stream Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate")
