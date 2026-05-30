@@ -42,6 +42,8 @@ export default function AnalyzePage() {
   const [isStreamingMode, setIsStreamingMode] = useState(true);
   const [streamLogs, setStreamLogs] = useState<string[]>([]);
   const [streamStatus, setStreamStatus] = useState<string>("准备就绪");
+  const [activeAgent, setActiveAgent] = useState<string>("none");
+  const [parseStats, setParseStats] = useState<{ start: Date; end: Date; duration: number } | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   
   useEffect(() => {
@@ -94,77 +96,76 @@ export default function AnalyzePage() {
     setCheckedFlaws({});
     setStreamLogs([]);
     setStreamStatus("启动解析引擎...");
+    setActiveAgent("none");
+    setParseStats(null);
+
+    const startTime = new Date();
 
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("config", JSON.stringify(config));
 
-      if (isStreamingMode) {
-        const res = await fetch("http://localhost:8000/api/analyze/stream", {
-          method: "POST",
-          body: formData,
-        });
+      // Always use stream backend to drive agent progress visualization
+      const res = await fetch("http://localhost:8000/api/analyze/stream", {
+        method: "POST",
+        body: formData,
+      });
 
-        if (!res.ok || !res.body) throw new Error("流式解析请求失败");
+      if (!res.ok || !res.body) throw new Error("流式解析请求失败");
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let parsed;
+          try {
+            parsed = JSON.parse(line);
+          } catch (e) {
+             console.error("JSON parse error on stream chunk:", line);
+             continue;
+          }
           
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            let parsed;
-            try {
-              parsed = JSON.parse(line);
-            } catch (e) {
-               console.error("JSON parse error on stream chunk:", line);
-               continue;
+          if (parsed.status === "info" || parsed.status === "agent1" || parsed.status === "agent2" || parsed.status === "agent3") {
+            setStreamStatus(parsed.message);
+            setStreamLogs(prev => [...prev, `\n[INFO] ${parsed.message}\n`]);
+            if (parsed.status.startsWith("agent")) {
+               setActiveAgent(parsed.status);
             }
-            
-            if (parsed.status === "info" || parsed.status === "agent1" || parsed.status === "agent2" || parsed.status === "agent3") {
-              setStreamStatus(parsed.message);
-              setStreamLogs(prev => [...prev, `\n[INFO] ${parsed.message}\n`]);
-            } else if (parsed.status === "chunk1" || parsed.status === "chunk2" || parsed.status === "chunk3") {
-              setStreamLogs(prev => {
-                 const newLogs = [...prev];
-                 if (newLogs.length === 0) {
-                     newLogs.push(parsed.text);
-                 } else {
-                     newLogs[newLogs.length - 1] += parsed.text;
-                 }
-                 return newLogs;
-              });
-            } else if (parsed.status === "error") {
-              throw new Error(parsed.message);
-            } else if (parsed.status === "done") {
-              setResult(parsed.data);
-              toast.success("解析成功！", { description: "已成功提取实质性条款和文件要求。" });
-            }
+          } else if (parsed.status === "chunk1" || parsed.status === "chunk2" || parsed.status === "chunk3") {
+            setStreamLogs(prev => {
+               const newLogs = [...prev];
+               if (newLogs.length === 0) {
+                   newLogs.push(parsed.text);
+               } else {
+                   newLogs[newLogs.length - 1] += parsed.text;
+               }
+               return newLogs;
+            });
+          } else if (parsed.status === "error") {
+            throw new Error(parsed.message);
+          } else if (parsed.status === "done") {
+            const endTime = new Date();
+            setParseStats({
+              start: startTime,
+              end: endTime,
+              duration: (endTime.getTime() - startTime.getTime()) / 1000
+            });
+            setResult(parsed.data);
+            setActiveAgent("done");
+            toast.success("解析成功！", { description: "已成功提取实质性条款和文件要求。" });
           }
         }
-      } else {
-        const res = await fetch("http://localhost:8000/api/analyze", {
-          method: "POST",
-          body: formData,
-        });
-
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || "解析请求失败");
-        }
-
-        const data = await res.json();
-        setResult(data.data);
-        toast.success("解析成功！", { description: "已成功提取实质性条款和文件要求。" });
       }
     } catch (error: any) {
       console.error(error);
@@ -302,7 +303,7 @@ export default function AnalyzePage() {
                   <p className="text-sm text-primary animate-pulse">{streamStatus}</p>
                 </div>
               </div>
-              {isStreamingMode && (
+              {isStreamingMode ? (
                 <div className="flex-1 p-4 bg-slate-900 text-green-400 font-mono text-xs overflow-y-auto whitespace-pre-wrap leading-relaxed max-h-[400px]">
                   {streamLogs.map((log, idx) => (
                     <span key={idx}>{log}</span>
@@ -310,12 +311,61 @@ export default function AnalyzePage() {
                   <span className="animate-pulse">_</span>
                   <div ref={logsEndRef} />
                 </div>
+              ) : (
+                <div className="flex-1 p-8 bg-slate-50 flex flex-col items-center justify-center min-h-[300px]">
+                  <div className="flex items-center justify-between w-full max-w-2xl relative">
+                    <div className="absolute top-1/2 left-10 right-10 h-1 bg-slate-200 -z-10 -translate-y-1/2 rounded-full"></div>
+                    
+                    <div className={`flex flex-col items-center space-y-3 bg-white p-6 rounded-2xl shadow-sm border-2 transition-all duration-500 w-1/3 mx-2 ${activeAgent === 'agent1' ? 'border-blue-500 scale-105 shadow-blue-100' : (activeAgent === 'agent3' || activeAgent === 'agent2' || activeAgent === 'done' ? 'border-blue-200' : 'border-slate-100')}`}>
+                      <div className={`w-14 h-14 rounded-full flex items-center justify-center text-xl font-bold transition-colors duration-500 ${activeAgent === 'agent1' ? 'bg-blue-500 text-white animate-bounce shadow-lg shadow-blue-200' : (activeAgent === 'agent3' || activeAgent === 'agent2' || activeAgent === 'done' ? 'bg-blue-100 text-blue-500' : 'bg-slate-100 text-slate-400')}`}>
+                        1
+                      </div>
+                      <h4 className="font-bold text-sm text-slate-700 text-center">结构与风险分析</h4>
+                      <p className={`text-xs text-center h-4 ${activeAgent === 'agent1' ? 'text-blue-500 font-medium' : 'text-slate-400 opacity-0'}`}>
+                        {activeAgent === 'agent1' && "正在阅读全文..."}
+                      </p>
+                    </div>
+
+                    <div className={`flex flex-col items-center space-y-3 bg-white p-6 rounded-2xl shadow-sm border-2 transition-all duration-500 w-1/3 mx-2 ${activeAgent === 'agent3' ? 'border-purple-500 scale-105 shadow-purple-100' : (activeAgent === 'agent2' || activeAgent === 'done' ? 'border-purple-200' : 'border-slate-100')}`}>
+                      <div className={`w-14 h-14 rounded-full flex items-center justify-center text-xl font-bold transition-colors duration-500 ${activeAgent === 'agent3' ? 'bg-purple-500 text-white animate-bounce shadow-lg shadow-purple-200' : (activeAgent === 'agent2' || activeAgent === 'done' ? 'bg-purple-100 text-purple-500' : 'bg-slate-100 text-slate-400')}`}>
+                        2
+                      </div>
+                      <h4 className="font-bold text-sm text-slate-700 text-center">严格质检核验</h4>
+                      <p className={`text-xs text-center h-4 ${activeAgent === 'agent3' ? 'text-purple-500 font-medium' : 'text-slate-400 opacity-0'}`}>
+                        {activeAgent === 'agent3' && "合并与纠偏..."}
+                      </p>
+                    </div>
+
+                    <div className={`flex flex-col items-center space-y-3 bg-white p-6 rounded-2xl shadow-sm border-2 transition-all duration-500 w-1/3 mx-2 ${activeAgent === 'agent2' ? 'border-green-500 scale-105 shadow-green-100' : (activeAgent === 'done' ? 'border-green-200' : 'border-slate-100')}`}>
+                      <div className={`w-14 h-14 rounded-full flex items-center justify-center text-xl font-bold transition-colors duration-500 ${activeAgent === 'agent2' ? 'bg-green-500 text-white animate-bounce shadow-lg shadow-green-200' : (activeAgent === 'done' ? 'bg-green-100 text-green-500' : 'bg-slate-100 text-slate-400')}`}>
+                        3
+                      </div>
+                      <h4 className="font-bold text-sm text-slate-700 text-center">模板特征词提取</h4>
+                      <p className={`text-xs text-center h-4 ${activeAgent === 'agent2' ? 'text-green-500 font-medium' : 'text-slate-400 opacity-0'}`}>
+                        {activeAgent === 'agent2' && "寻找模板文本..."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           )}
 
           {result && (
             <div className="space-y-6">
+              {/* Parse Stats */}
+              {parseStats && (
+                <div className="flex items-center justify-between bg-green-50 text-green-700 text-sm px-4 py-2 rounded-lg border border-green-200">
+                  <div className="flex space-x-4">
+                    <span>开始: {parseStats.start.toLocaleTimeString()}</span>
+                    <span>结束: {parseStats.end.toLocaleTimeString()}</span>
+                  </div>
+                  <div className="font-semibold">
+                    总耗时: {parseStats.duration.toFixed(1)} 秒
+                  </div>
+                </div>
+              )}
+
               {/* Project Info */}
               <Card>
                 <CardHeader className="pb-4 border-b">

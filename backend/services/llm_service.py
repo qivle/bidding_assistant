@@ -15,7 +15,7 @@ def clean_json_text(text: str) -> str:
         text = text.split("```")[1].split("```")[0]
     return text.strip()
 
-async def call_llm_with_fallback(prompt: str, config: AIConfig) -> str:
+async def call_llm_with_fallback(prompt: str, config: AIConfig, use_flash: bool = False) -> str:
     base_url = config.baseUrl.strip() if config.baseUrl else ""
     if "api.deepseek.com" in base_url and not base_url.endswith("/v1") and not base_url.endswith("/v1/"):
         base_url = base_url.rstrip("/") + "/v1"
@@ -26,9 +26,11 @@ async def call_llm_with_fallback(prompt: str, config: AIConfig) -> str:
         http_client=httpx.AsyncClient(verify=False, trust_env=False)
     )
     
+    target_model = config.model_flash if (use_flash and config.model_flash) else config.model
+    
     try:
         res = await client.chat.completions.create(
-            model=config.model,
+            model=target_model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.0
@@ -39,7 +41,7 @@ async def call_llm_with_fallback(prompt: str, config: AIConfig) -> str:
             print(f"Model does not support json_object format, falling back to standard text. Error: {e}")
             try:
                 res2 = await client.chat.completions.create(
-                    model=config.model,
+                    model=target_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0
                 )
@@ -62,10 +64,12 @@ async def extract_bidding_info(text: str, config: AIConfig) -> dict:
     
     【任务3】：提取投标文件分册结构(volumes)。政企标书通常分为多个分册。
     **极度严厉指令（防止遗漏与支持层级）**：
-    1. 请完全保留原文中的层级号和所有细分标号（如 '2.1 商务文件'，'(1) 投标声明书' 到 '(14)' 全部条目）。
-    2. 绝对不允许省略、合并或跳过任何一个文件要求！如果原文有14条商务文件和7条技术文件，你的列表中必须如实出现这21个独立项目，必须逐一输出！
-    3. 如果招标文件要求将“商务文件”和“技术文件”合并封装在一个叫做“商务技术文件”的分册中，你【必须】只生成一个 volume！绝不能拆分为两个 volume！你应该把“2.1 商务文件”和“2.2 技术文件”作为 `"type": "heading"` 放在同一个 volume 的 items 里。
-    4. 绝不允许丢弃条目前面的序号！`name` 字段的值必须严格以原始序号开头，如 '(1) 投标声明书'，绝不能擅自删减序号！
+    1. 【表单无序号规则】：强制要求！如果原文中有“封面”、“目录”，你必须将它们作为 item 提取出来，绝不能遗漏！但是【绝对不能】擅自给它们加上序号（如不能写成“1. 封面”，只能写“封面”）。只有原文中明确带有序号的实体文件才能保留序号。
+    2. 【分册锚点规则】：真正的分册依据通常是类似“分为三部分”、“第一分册/第二分册”、“资格审查文件”、“商务技术文件”、“报价文件”等独立封装要求。如果原文出现了“12.1 响应文件组成（三部分）”，不能把“12.1 响应文件组成”当做分册名。必须向下钻取，把“（一）资格证明文件”、“（二）商务文件”等作为真正的 volume_name。
+    3. 请完全保留原文中的层级号和所有细分标号（如 '2.1 商务文件'，'(1) 投标声明书' 到 '(14)' 全部条目）。
+    4. 绝对不允许省略、合并或跳过任何一个文件要求！如果原文有14条商务文件和7条技术文件，你的列表中必须如实出现这21个独立项目，必须逐一输出！
+    5. 如果招标文件要求将“商务文件”和“技术文件”合并封装在一个叫做“商务技术文件”的分册中，你【必须】只生成一个 volume！绝不能拆分为两个 volume！你应该把“2.1 商务文件”和“2.2 技术文件”作为 `"type": "heading"` 放在同一个 volume 的 items 里。
+    6. 绝不允许丢弃条目前面的序号！`name` 字段的值必须严格以原始序号开头，如 '(1) 投标声明书'，绝不能擅自删减序号！
 
     请严格以 JSON 格式输出：
     {{
@@ -110,6 +114,8 @@ async def extract_bidding_info(text: str, config: AIConfig) -> dict:
         1. **合并分册检查**：如果原文要求将“商务文件”和“技术文件”放在一起（例如都叫“商务技术文件”），但上面的 JSON 错误地把它们拆成了两个 `volumes`，你必须将它们合并为同一个 volume（如 `volume_name: "商务技术文件"`），并将“商务文件”和“技术文件”作为 `type: "heading"` 放在 items 数组中！
         2. **找回丢失的序号**：强制检查每一个 item 的 `name`！如果前置模型擅自删掉了诸如 `(1)`、`(2)`、`一、` 等原始序号，你必须从原文中找回来，并给每一个 name 加上它在原文中原本就有的序号！例如 `(1) 投标声明书`。
         3. **查漏补缺**：严格对照原文，检查是否有遗漏的文件要求，确保一一对应，一个都不能少。
+        4. **剔除伪造序号**：允许保留“封面”、“目录”等项目，但必须强制检查它们的 name。如果原文并没有给它们分配序号，你必须将擅自添加的序号删掉（例如把“1. 封面”纠正回“封面”）。
+        5. **纠正分册名**：如果 volume_name 被错误地命名为“响应文件组成”或大类标题，请将其修正为真正的分册名（如“资格证明文件”、“商务技术文件”、“报价文件”等）。
         
         【必须遵守的标准修改示例】：
         如果原文要求将“商务文件”和“技术文件”合并，且有序号，你修改后的 `volumes` 数组应该严格长这样（包含 type="heading" 且保留原始序号）：
@@ -159,7 +165,7 @@ async def extract_bidding_info(text: str, config: AIConfig) -> dict:
         {text}
         """
         print("Running Agent 2 (Template Marker Extraction)...")
-        content2 = await call_llm_with_fallback(prompt2, config)
+        content2 = await call_llm_with_fallback(prompt2, config, use_flash=True)
         
         with open("llm_debug.txt", "w", encoding="utf-8") as f:
             f.write("=== AGENT 1 ===\n" + cleaned_content1 + "\n\n=== AGENT 3 ===\n" + cleaned_content3 + "\n\n=== AGENT 2 RAW ===\n" + content2)
@@ -200,10 +206,12 @@ async def extract_bidding_info_stream(text: str, config: AIConfig) -> AsyncGener
     
     【任务3】：提取投标文件分册结构(volumes)。政企标书通常分为多个分册。
     **极度严厉指令（防止遗漏与支持层级）**：
-    1. 请完全保留原文中的层级号和所有细分标号（如 '2.1 商务文件'，'(1) 投标声明书' 到 '(14)' 全部条目）。
-    2. 绝对不允许省略、合并或跳过任何一个文件要求！如果原文有14条商务文件和7条技术文件，你的列表中必须如实出现这21个独立项目，必须逐一输出！
-    3. 如果招标文件要求将“商务文件”和“技术文件”合并封装在一个叫做“商务技术文件”的分册中，你【必须】只生成一个 volume！绝不能拆分为两个 volume！你应该把“2.1 商务文件”和“2.2 技术文件”作为 `"type": "heading"` 放在同一个 volume 的 items 里。
-    4. 绝不允许丢弃条目前面的序号！`name` 字段的值必须严格以原始序号开头，如 '(1) 投标声明书'，绝不能擅自删减序号！
+    1. 【表单无序号规则】：强制要求！如果原文中有“封面”、“目录”，你必须将它们作为 item 提取出来，绝不能遗漏！但是【绝对不能】擅自给它们加上序号（如不能写成“1. 封面”，只能写“封面”）。只有原文中明确带有序号的实体文件才能保留序号。
+    2. 【分册锚点规则】：真正的分册依据通常是类似“分为三部分”、“第一分册/第二分册”、“资格审查文件”、“商务技术文件”、“报价文件”等独立封装要求。如果原文出现了“12.1 响应文件组成（三部分）”，不能把“12.1 响应文件组成”当做分册名。必须向下钻取，把“（一）资格证明文件”、“（二）商务文件”等作为真正的 volume_name。
+    3. 请完全保留原文中的层级号和所有细分标号（如 '2.1 商务文件'，'(1) 投标声明书' 到 '(14)' 全部条目）。
+    4. 绝对不允许省略、合并或跳过任何一个文件要求！如果原文有14条商务文件和7条技术文件，你的列表中必须如实出现这21个独立项目，必须逐一输出！
+    5. 如果招标文件要求将“商务文件”和“技术文件”合并封装在一个叫做“商务技术文件”的分册中，你【必须】只生成一个 volume！绝不能拆分为两个 volume！你应该把“2.1 商务文件”和“2.2 技术文件”作为 `"type": "heading"` 放在同一个 volume 的 items 里。
+    6. 绝不允许丢弃条目前面的序号！`name` 字段的值必须严格以原始序号开头，如 '(1) 投标声明书'，绝不能擅自删减序号！
 
     请严格以 JSON 格式输出：
     {{
@@ -260,6 +268,8 @@ async def extract_bidding_info_stream(text: str, config: AIConfig) -> AsyncGener
         1. **合并分册检查**：如果原文要求将“商务文件”和“技术文件”放在一起（例如都叫“商务技术文件”），但上面的 JSON 错误地把它们拆成了两个 `volumes`，你必须将它们合并为同一个 volume（如 `volume_name: "商务技术文件"`），并将“商务文件”和“技术文件”作为 `type: "heading"` 放在 items 数组中！
         2. **找回丢失的序号**：强制检查每一个 item 的 `name`！如果前置模型擅自删掉了诸如 `(1)`、`(2)`、`一、` 等原始序号，你必须从原文中找回来，并给每一个 name 加上它在原文中原本就有的序号！例如 `(1) 投标声明书`。
         3. **查漏补缺**：严格对照原文，检查是否有遗漏的文件要求，确保一一对应，一个都不能少。
+        4. **剔除伪造序号**：允许保留“封面”、“目录”等项目，但必须强制检查它们的 name。如果原文并没有给它们分配序号，你必须将擅自添加的序号删掉（例如把“1. 封面”纠正回“封面”）。
+        5. **纠正分册名**：如果 volume_name 被错误地命名为“响应文件组成”或大类标题，请将其修正为真正的分册名（如“资格证明文件”、“商务技术文件”、“报价文件”等）。
         
         【必须遵守的标准修改示例】：
         如果原文要求将“商务文件”和“技术文件”合并，且有序号，你修改后的 `volumes` 数组应该严格长这样（包含 type="heading" 且保留原始序号）：
@@ -319,8 +329,9 @@ async def extract_bidding_info_stream(text: str, config: AIConfig) -> AsyncGener
         {text}
         """
         
+        target_model = config.model_flash if config.model_flash else config.model
         res2 = await client.chat.completions.create(
-            model=config.model,
+            model=target_model,
             messages=[{"role": "user", "content": prompt2}],
             temperature=0.0,
             stream=True

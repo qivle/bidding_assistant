@@ -111,6 +111,10 @@ def find_element_and_copy(source_doc, marker_text, dest_doc, all_markers=None):
     
     found_start = False
     
+    sliding_window = []
+    signature_block_detected = False
+    lines_after_signature = 0
+    
     for i in range(start_idx, len(body_elements)):
         elem = body_elements[i]
         # 仅处理段落和表格
@@ -139,9 +143,9 @@ def find_element_and_copy(source_doc, marker_text, dest_doc, all_markers=None):
             
         # 判断是否是下一个模板的标题 (跳过刚刚匹配到的第一段)
         is_new_template = False
-        if not just_found and text:
-            # 标题不应该以句号、分号、逗号结尾（排除模板正文中的正常段落或列表声明项）
-            if not re.search(r'[。；;，,]$', text.strip()):
+        if not just_found and text and elements_copied > 1:
+            # 标题不应该以句号、分号、逗号、冒号结尾（排除模板正文中的正常段落或列表声明项）
+            if not re.search(r'[。；;，,：:]$', text.strip()):
                 if 2 < len(text) < 80:
                     # 1. 启发式正则
                     if re.match(r'^附件\s*\d+', text) or re.match(r'^附表\s*\d+', text):
@@ -152,22 +156,22 @@ def find_element_and_copy(source_doc, marker_text, dest_doc, all_markers=None):
                         is_new_template = True
                     # 响应用户的需求：遇到 (1) (2) 连续数字标号的独立段落，直接认为是新章节
                     elif re.match(r'^[（\(]?[一二三四五六七八九十\d]+[）\)、\.]', text):
-                        # 核心防误杀：正文中的“1.我方保证提交的文件真实。”不应被当成新标题
-                        if not re.search(r'[，。；]', text):
+                        # 核心防误杀：正文中的“1.我方保证提交的文件真实。”不应被当成新标题。将冒号也加入黑名单。
+                        if not re.search(r'[，。；：:]', text):
                             # 如果没有特定关键词，则只要它不太长（比如典型的标题长度），就认为是新章节
                             if any(keyword in text for keyword in ['函', '表', '格式', '声明', '部分', '材料', '证明', '文件', '承诺', '报价', '书']):
                                 is_new_template = True
                             elif len(text) < 25:
                                 is_new_template = True
-                    # 2. 绝对匹配其他已知模板的特征词
+                    # 2. 绝对匹配其他已知模板的特征词 (维度1：下一个文件阻断)
                     if clean_text and any((om in clean_text or clean_text in om) for om in other_markers):
                         # 如果匹配了其他模板名字，但也需要确保它是个“标题”的样子，不能是一长串带标点的话
-                        if not re.search(r'[，。；]', text):
+                        if not re.search(r'[，。；：:]', text):
                             is_new_template = True
                             
-            if is_heading or is_new_template:
+            if (is_heading and elements_copied > 3) or is_new_template:
                 break
-                
+
         # 深拷贝 XML 节点
         new_elem = copy.deepcopy(elem)
         
@@ -182,7 +186,6 @@ def find_element_and_copy(source_doc, marker_text, dest_doc, all_markers=None):
         for sect in new_elem.xpath('.//w:sectPr'):
             sect.getparent().remove(sect)
 
-        
         # 关键修复：不能直接 append，必须插入到 sectPr（如果有）之前，否则 Word 会把它们全部丢到文档最后或破坏结构
         sectPr = dest_doc.element.body.find(qn('w:sectPr'))
         if sectPr is not None:
